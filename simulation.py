@@ -6,6 +6,7 @@ import numpy as np
 import networkx as nx
 from collections import defaultdict
 from tqdm import trange, tqdm
+import itertools
 
 
 def run_simulation(
@@ -19,6 +20,13 @@ def run_simulation(
     grid_size=100,
     gaussian_sigma=2,
     random_walker_frac=0.15,
+    random_walker_min=5,
+    random_walker_max=20,
+    population_min=30,
+    population_max=80,
+    flow_noise_frac=0.1,
+    path_mode="shortest",
+    k_shortest=3,
     random_seed=None,
 ):
     """
@@ -28,10 +36,15 @@ def run_simulation(
         grid_metrics: dict
         summary: dict
     """
+    # Set RNG for reproducibility if requested
+    if random_seed is not None:
+        np.random.seed(random_seed)
+
     # Step 3: Demand generation (gravity model)
-    sources = [n for n, p in pois.items() if p["type"] == "dorm"]
-    sinks = [n for n, p in pois.items() if p["type"] in ("classroom", "dining", "library")]
-    population = {n: np.random.randint(30, 80) for n in sources}
+    # 基础 OD: 允许任意已标注的 POI 作为源或汇
+    sources = list(pois.keys())
+    sinks = list(pois.keys())
+    population = {n: np.random.randint(population_min, population_max) for n in sources}
     attraction = {n: pois[n]["weight"] for n in sinks}
     # Precompute shortest path lengths
     lengths = dict(nx.all_pairs_dijkstra_path_length(G, weight="length"))
@@ -42,7 +55,7 @@ def run_simulation(
                 continue
             dist = lengths[i][j]
             flow = (population[i] * attraction[j]) / (dist ** 2 + epsilon)
-            flow += np.random.normal(0, 0.1 * flow)  # Gaussian noise
+            flow += np.random.normal(0, flow_noise_frac * flow)  # Gaussian noise
             if flow > 0:
                 od_flows[(i, j)] += max(flow, 0)
     # Add random walkers
@@ -50,7 +63,7 @@ def run_simulation(
     n_random = int(random_walker_frac * max(1, len(od_flows)))
     for _ in tqdm(range(n_random), desc="Random Walkers", unit="rw"):
         i, j = np.random.choice(all_nodes, 2, replace=False)
-        od_flows[(i, j)] += np.random.uniform(5, 20)
+        od_flows[(i, j)] += np.random.uniform(random_walker_min, random_walker_max)
     # Step 4: Path simulation (slime mold + ant-colony)
     # 为兼容 MultiDiGraph，使用带 key 的 edge tuple (u,v,k) 作为字典键
     if G.is_multigraph():
@@ -78,7 +91,73 @@ def run_simulation(
                     if "length" not in d or dval is None:
                         return 1e9  # 极大权重，跳过无效边
                     return d["length"] / (dval + 1e-2)
-                path = nx.shortest_path(G, i, j, weight=weight_func)
+
+                # 支持多种路径策略
+                if path_mode == "shortest":
+                    path = nx.shortest_path(G, i, j, weight=weight_func)
+                elif path_mode == "stochastic_k":
+                    try:
+                        paths_gen = nx.shortest_simple_paths(G, i, j, weight=weight_func)
+                        candidates = list(itertools.islice(paths_gen, k_shortest))
+                        if not candidates:
+                            continue
+
+                        def path_cost(p):
+                            cost = 0.0
+                            for u, v in zip(p[:-1], p[1:]):
+                                if G.is_multigraph():
+                                    try:
+                                        k0 = next(iter(G[u][v]))
+                                        d0 = G[u][v][k0]
+                                    except Exception:
+                                        d0 = list(G[u][v].values())[0]
+                                else:
+                                    d0 = G[u][v]
+                                cost += weight_func(u, v, d0)
+                            return cost
+
+                        costs = np.array([path_cost(p) for p in candidates])
+                        probs = (1.0 / (costs + 1e-6))
+                        probs = probs / probs.sum()
+                        idx = np.random.choice(len(candidates), p=probs)
+                        path = candidates[int(idx)]
+                    except Exception:
+                        continue
+                elif path_mode == "random_walk":
+                    current = i
+                    path = [i]
+                    max_steps = max(50, len(G) * 4)
+                    steps = 0
+                    while current != j and steps < max_steps:
+                        # neighbors for MultiGraph vs Graph
+                        if G.is_multigraph():
+                            neighs = list(G[current].keys())
+                        else:
+                            neighs = list(G[current])
+                        if not neighs:
+                            break
+                        weights = []
+                        for nb in neighs:
+                            if G.is_multigraph():
+                                try:
+                                    k0 = next(iter(G[current][nb]))
+                                    d0 = G[current][nb][k0]
+                                except Exception:
+                                    d0 = list(G[current][nb].values())[0]
+                            else:
+                                d0 = G[current][nb]
+                            weights.append(1.0 / (d0.get("length", 1.0) + 1e-6))
+                        probs = np.array(weights) / np.sum(weights)
+                        nb = np.random.choice(neighs, p=probs)
+                        path.append(nb)
+                        current = nb
+                        steps += 1
+                    if current != j:
+                        # 未能到达目标，跳过该 OD
+                        continue
+                else:
+                    # 未知模式，回退到最短路径
+                    path = nx.shortest_path(G, i, j, weight=weight_func)
             except nx.NetworkXNoPath:
                 continue
             for u, v in zip(path[:-1], path[1:]):

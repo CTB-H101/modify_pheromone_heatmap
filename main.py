@@ -22,14 +22,23 @@ from visualization import generate_heatmaps, print_summary_stats
 # - heatmap_alpha: 热力图叠加到底图时的透明度（0.0-1.0）
 CONFIG = {
     # 模拟参数
-    "duration": 60,
+    "duration": 600,
     "timestep": 1,
     "alpha": 0.1,
     "epsilon": 1e-3,
     "sim_iters": 10,
-    "grid_size": 100,
-    "gaussian_sigma": 2,
-    "random_walker_frac": 0.15,
+    "grid_size": 500,
+    "gaussian_sigma": 3,
+        "random_walker_frac": 0.15,
+        # 随机参数（可在此调节）
+        "population_min": 3000,
+        "population_max": 8000,
+        "random_walker_min": 50,
+        "random_walker_max": 200,
+        "flow_noise_frac": 0.1,
+        # 路径策略：'shortest' | 'random_walk' | 'stochastic_k'
+        "path_mode": "random_walk",
+        "k_shortest": 3,
     "random_seed": 42,
     # 可视化参数
     "heatmap_threshold": 0.02,  # 归一化后值，低于此值设为透明
@@ -55,6 +64,13 @@ def run_all():
         grid_size=CONFIG["grid_size"],
         gaussian_sigma=CONFIG["gaussian_sigma"],
         random_walker_frac=CONFIG["random_walker_frac"],
+        random_walker_min=CONFIG["random_walker_min"],
+        random_walker_max=CONFIG["random_walker_max"],
+        population_min=CONFIG["population_min"],
+        population_max=CONFIG["population_max"],
+        flow_noise_frac=CONFIG["flow_noise_frac"],
+        path_mode=CONFIG["path_mode"],
+        k_shortest=CONFIG["k_shortest"],
         random_seed=CONFIG["random_seed"],
     )
 
